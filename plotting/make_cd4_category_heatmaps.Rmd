@@ -1,0 +1,367 @@
+---
+title: "CD4 T Cell Classification Heatmaps"
+author: "Kari Stromhaug"
+date: "9/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(tidyverse)
+library(pheatmap)
+library(cowplot)
+library(reshape2)
+source('~/Documents/source_code/seurat_functions.R')
+```
+
+```{r read in data}
+setwd('~/Dropbox (Partners HealthCare)/Melanoma P2 Analysis/tils_combined/cd4_analysis/')
+wu = readRDS('../../other_datasets/wu_et_al_seurats.rds')
+yost = readRDS('../../other_datasets/yost_all_seurat_preprocessed.rds')
+tils = readRDS('../Seurat_Objects/cd4_with_diffmap.rds')
+tilsmeta <- tils@meta.data
+
+wu.tcell.meta = read.delim('../../other_datasets/GSE139555_tcell_metadata.txt')
+wu.tcell.categs = wu.tcell.meta[,c('X', 'ident')]
+rownames(wu.tcell.meta) = wu.tcell.meta$X
+
+wu.tcell.cd4 = wu.tcell.meta %>% subset(grepl('4\\.|3\\.', ident))
+unique(wu.tcell.cd4$ident)
+unique(wu.tcell.meta$ident)
+```
+
+```{r subset_function}
+subset_all <- function(obj) {
+  pref = toupper(unique(obj$orig.ident))
+  obj <- RenameCells(obj, add.cell.id = pref)
+
+  wu.tcell.meta = read.delim('../../other_datasets/GSE139555_tcell_metadata.txt')
+  wu.tcell.categs = wu.tcell.meta[,c('X', 'ident')]
+  rownames(wu.tcell.meta) = wu.tcell.meta$X
+  wu.tcell.meta = wu.tcell.meta %>% subset(grepl('4\\.|3\\.', ident))
+
+  meta = obj@meta.data
+  meta$barcode = rownames(meta)
+  meta.merged = merge(wu.tcell.meta, meta, by.x='X', by.y='barcode'); nrow(meta); nrow(wu.tcell.meta); nrow(meta.merged)
+  cat('rows of meta: ', nrow(meta), '\n')
+  cat('rows of wu.tcell.meta: ', nrow(wu.tcell.meta), '\n')
+  cat('dimensions of meta.merged: ', nrow(meta.merged), ncol(meta.merged), '\n\n')
+  ## subset to just the cells we want
+  obj = subset(obj, cells=meta.merged$barcode)
+    
+  return(obj)
+}
+
+```
+
+#### Select CD4 cell population in the Wu dataset
+```{r}
+
+wu1 = wu_pp[[1]]
+
+pref = toupper(unique(wu1$orig.ident))
+wu1 <- RenameCells(wu1, add.cell.id = pref)
+
+wu1@meta.data$orig.barcode <- paste0(toupper(wu1$orig.ident), '_', rownames(wu1@meta.data))
+rownames(wu1@meta.data) <- wu1$orig.barcode
+
+wu_pp_sub = sapply(wu, FUN=subset_all)
+
+### merge the datasets
+ct = c('ct1', 'ct2')
+en = c('en1', 'en2', 'en3')
+et = c('et1', 'et2', 'et3')
+ln = c('ln1', 'ln2', 'ln3', 'ln4', 'ln5', 'ln6')
+lt = c('lt1', 'lt2', 'lt3', 'lt4', 'lt5', 'lt6')
+rb = c('rb1', 'rb2', 'rb3')
+rn = c('rn1', 'rn2', 'rn3')
+rt = c('rt1', 'rt2', 'rt3')
+
+pats = list(ct, en, et, ln, lt, rb, rn, rt)
+patnames = c('ct', 'en', 'et', 'ln', 'lt', 'rb', 'rn', 'rt')
+names(pats)<-patnames
+
+newobs <- list()
+for (pat in patnames) {
+	show(pat)
+	show(pats[[pat]])
+	sub <- wu_pp_sub[pats[[pat]]]
+	show(length(sub))
+	show(sub)
+	newob <- merge(sub[[1]], sub[2:length(sub)])
+	show('merged')
+	newobs[[pat]] <- newob
+}
+
+allmerged = merge(newobs[[1]], newobs[2:length(newobs)])
+allmerged <- subset(allmerged, cells=intersect(colnames(allmerged), rownames(wu.tcell.cd4)))
+allmerged <- AddMetaData(allmerged, wu.tcell.cd4)
+
+## add in UMAP reduction from the metadata
+names(allmerged@meta.data)[names(allmerged@meta.data)=='ident']<-'tcell.type'
+allmerged[["WU_UMAP"]] <- CreateDimReducObject(embeddings = as.matrix(allmerged@meta.data[,c('UMAP_1', 'UMAP_2')]), key = "UMAP_", assay = "RNA")
+DimPlot(allmerged, group.by='tcell.type', reduction='WU_UMAP')
+table(allmerged$tcell.type)
+
+
+saveRDS(allmerged, 'wu_cd4_20200902.rds')
+
+wu = readRDS('wu_cd4_20200902.rds')
+
+wu <- DoPreProcessing(wu)
+smoothScatter(wu@assays$RNA@data["CD4", ], wu@assays$RNA@data["CD8A", ], xlab = "CD4", ylab = "CD8")
+
+cd4.cells = colnames(wu@assays$RNA@data[, wu@assays$RNA@data['CD8A',] < 0.5]); length(cd4.cells)
+wu.cd4 = subset(wu, cells=cd4.cells); dim(wu.cd4)
+
+DimPlot(wu.cd4, group.by='tcell.type')
+DimPlot(wu, group.by='tcell.type')
+
+saveRDS(wu.cd4, 'wu_cd4_20200902.rds')
+wu.cd4 = readRDS('wu_cd4_20200902.rds')
+
+wu.cd4 <- DoSeurat(wu.cd4, do_harm=T, harm_variable='patient')
+
+```
+
+### select the CD4 cells in the yost dataset
+
+```{r}
+
+unique(yost$cluster)
+keep = c('Tfh', 'Tregs', 'Th17', 'Naive')
+
+y.cd4.cells = c(rownames(meta[grepl('Tfh|Tregs|Th17|Naive', meta$cluster),])); length(y.cd4.cells)
+
+meta = yost@meta.data
+VlnPlot(object = yost, group.by='batch', features = c("nCount_RNA", 'nFeature_RNA', 'percent_mito'), pt.size = 0)
+cells.keep = rownames(meta[meta$nCount_RNA<7500 & meta$nFeature_RNA<4000 & meta$percent_mito < 0.1, ]); length(cells.keep)
+cells.keep = intersect(y.cd4.cells, cells.keep); length(cells.keep)
+
+yost.cd4 = subset(yost, cells=cells.keep); dim(yost.cd4)
+show(VlnPlot(object = yost.cd4, group.by='batch', features = c("nCount_RNA", 'nFeature_RNA', 'percent_mito'), pt.size = 0))
+
+table(yost$cluster)
+table(yost.cd4$cluster)
+
+yost.cd4 <- DoPreProcessing(yost.cd4)
+
+smoothScatter(yost.cd4@assays$RNA@data["CD4", ], yost.cd4@assays$RNA@data["CD8A", ], xlab = "CD4", ylab = "CD8")
+
+cd4.cells = colnames(yost.cd4@assays$RNA@data[, yost.cd4@assays$RNA@data['CD8A',] < 0.5]); length(cd4.cells)
+yost.cd4.2 = subset(yost.cd4, cells=cd4.cells); dim(yost.cd4.2)
+
+
+yost.cd4.2 <- DoSeurat(yost.cd4.2, do_pca=F, do_harm=T, harm_variable='patient')
+
+DimPlot(yost.cd4.2, label=T)
+DimPlot(yost.cd4.2, group.by='cluster')
+DimPlot(yost.cd4.2, group.by='patient')
+
+FeaturePlot(yost.cd4.2, features=c('CD4'))
+
+saveRDS(yost.cd4.2, 'yost_cd4_20200902.rds')
+
+
+
+```
+
+### Do some recoloring
+
+```{r recolor}
+name_map = c('CD4_Eff_Mem', 'Treg', 'CD4_An_Eff', 'CD4_Tfh_Ex', 'CD4_CM_Naive', 'Apoptotic', 'CD4_Term_Ex', 'Treg_NR4A1', 'Mitotic', 'NK_like_T', 'CD4_Term_Ex')
+names(name_map) <- 0:10
+
+color_map = c('dodgerblue', 'magenta', 'green3', 'gold', 'royalblue3', 'turquoise', 'red', 'magenta4', 'darkorange', 'purple', 'red')
+names(color_map) <- 0:10
+
+o_color_map = c('dodgerblue', 'magenta', 'green3', 'gold', 'royalblue3', 'turquoise', 'red', 'magenta4', 'darkorange', 'purple', 'red')
+names(o_color_map) <- name_map
+
+tils@meta.data$oliveira_labels <- name_map[tils@meta.data$seurat_clusters]
+tils@meta.data$oliveira_colors <- color_map[tils@meta.data$seurat_clusters]
+
+saveRDS(tils, 'tils_cd4_labeltransfer_20200902.rds')
+
+DimPlot(tils, group.by='oliveira_labels', cols=o_color_map)
+```
+
+```{r save loom}
+
+tils.c <- tils
+tils.c@meta.data <- tils.c@meta.data[,c('orig.ident', 'nCount_RNA', 'nFeature_RNA', 'sample', 'percent_mito',
+                                     'seurat_clusters', 'oliveira_labels', 'patient')]
+tils.c@meta.data[] <- lapply(tils.c@meta.data, as.character)
+tils.c@meta.data[is.na(tils.c@meta.data)]<-""
+tils.loom = as.loom(tils.c, filename = 'tils_cd4.loom')
+tils.loom$close_all()
+
+yost.loom = as.loom(yost, filename='yots_cd4.loom')
+yost.loom$close_all()
+
+wu.loom = as.loom(allmerged, filename='wu_cd4.loom')
+wu.loom$close_all()
+
+
+```
+
+```{r save for scanpy}
+require(Matrix)
+writeMM(t(wu@assays$RNA@counts), 'wu_cd4_counts_t.mtx')
+write.table(data.frame('genes'=rownames(wu)), 'wu_cd4_gene_names.txt', sep='\t')
+write.table(data.frame('var_genes'=wu@assays$RNA@var.features), 'wu_cd4_var_genes.txt', sep='\t')
+write.table(wu@meta.data, 'wu_cd4_meta.txt', sep='\t')
+
+writeMM(t(yost@assays$RNA@counts), 'yost_cd4_counts_t.mtx')
+write.table(data.frame('genes'=rownames(yost)), 'yost_cd4_gene_names.txt', sep='\t')
+write.table(data.frame('var_genes'=yost@assays$RNA@var.features), 'yost_cd4_var_genes.txt', sep='\t')
+write.table(yost@meta.data, 'yost_cd4_meta.txt', sep='\t')
+
+
+```
+
+
+## Re-load all the cd4 objects to use
+```{r}
+tils = readRDS('tils_cd4_labeltransfer_20200902.rds')
+yost = readRDS('yost_cd4_20200902.rds')
+wu = readRDS('wu_cd4_20200902.rds')
+
+
+# tils_labels = read.delim('tils_cd4_with_wu_yost_singler_labels.txt', sep='\t')
+tils_labels = read.delim('tils_cd4_with_wu_yost_singler_labels_2.txt', sep='\t')
+yost_labels = read.delim('yost_cd4_with_oliveira_labels.txt', sep='\t')
+# wu_labels = read.delim('wu_cd4_with_oliveira_labels.txt', sep='\t')
+wu_labels = read.delim('wu_cd4_with_oliveira_labels_2.txt', sep='\t')
+oh_labels = read.delim('../../Oh_et_al/cd4/tils_with_oh_labels_20210127.txt', sep='\t')
+
+```
+
+#### Add labels to metadata in the objects
+
+```{r}
+tils <- AddMetaData(tils, tils_labels)
+yost <- AddMetaData(yost, yost_labels)
+wu <- AddMetaData(wu, wu_labels)
+tils <- AddMetaData(tils, oh_labels)
+```
+
+## UMAPs, to start
+
+```{r pressure, echo=FALSE}
+DimPlot(tils, group.by='seurat_clusters', label=T)
+DimPlot(tils, group.by='oliveira_labels', cols=o_color_map)
+DimPlot(tils, group.by='oh.labels')
+```
+
+## Show UMAPs with transferred labels
+
+```{r tils with labels}
+palette = colorRampPalette(c('white', 'blue'))
+d1 = DimPlot(tils, group.by='oliveira_labels')
+d2 = DimPlot(tils, group.by='wu.labels')
+d3 = DimPlot(tils, group.by='yost.labels')
+plot_grid(d1, d2, d3)
+
+tils.order = c('CD4_CM_Naive', 'CD4_Eff_Mem', 'NK_like_T', 'CD4_An_Eff', 'Apoptotic', 'Mitotic', 'CD4_Tfh_Ex', 'CD4_Term_Ex', 'Treg', 'Treg_NR4A1')
+
+tils.w.wu <- MakeHeatmapTable(tils, 'oliveira_labels', 'wu.labels')
+pheatmap(tils.w.wu[,tils.order], cluster_rows=F, cluster_cols=F, color=palette(75))
+
+tils.w.yost <- MakeHeatmapTable(tils, 'oliveira_labels', 'yost.labels')
+pheatmap(tils.w.yost, cluster_rows=F, cluster_cols=F, color=palette(75))
+
+tils.w.oh <- MakeHeatmapTable(tils, 'oliveira_labels','oh.labels')
+tils.w.oh$Oh.cluster <- rownames(tils.w.oh)
+write.table(tils.w.oh, '~/Dropbox (Partners HealthCare)/Melanoma P2 Analysis/Oh_et_al/cd4/tils_cd4_with_oh_labels.txt', sep='\t', row.names=F)
+pheatmap(tils.w.oh, cluster_rows=T, cluster_cols=T, color=palette(75))
+```
+
+
+```{r}
+
+d1 = DimPlot(yost, group.by='cluster')
+d2 = DimPlot(yost, group.by='oliveira.labels')
+plot_grid(d1, d2)
+
+d1 = DimPlot(wu, group.by='tcell.type')
+d2 = DimPlot(wu, group.by='oliveira.labels')
+plot_grid(d1, d2)
+
+palette = colorRampPalette(c('white', 'blue'))
+wu.w.tils = MakeHeatmapTable(wu, 'tcell.type', 'oliveira.labels')
+wu.w.tils = wu.w.tils[,grep('4\\.|3\\.', colnames(wu.w.tils))]
+tils.order.2 = c('CD4_Memory', 'NK_like_T', 'CD4_An_Eff', 'Apoptotic', 'Mitotic', 'CD4_Tfh_Ex', 'CD4_Term_Ex', 'Treg', 'Treg_NR4A1')
+pheatmap(wu.w.tils[tils.order.2,], cluster_rows=F, cluster_cols=F, color=palette(75))
+
+
+```
+
+```{r heatmap function 2, echo=F, message=F}
+MakeHeatmapTable <- function(obj, internal_label, external_label) {
+  temp = data.frame(table(obj@meta.data[,c(internal_label, external_label)]))
+  temp = dcast(temp, paste0(internal_label, ' ~ ', external_label))
+
+  rownames(temp) <- temp[,internal_label]
+  temp[,internal_label]<-NULL
+
+  temp.t = t(temp)
+  temp.tp = temp.t
+  
+  for (i in 1:nrow(temp.tp)) {
+    temp.tp[i,] <- temp.tp[i,] / sum(temp.tp[i,]) * 100
+  }
+  for (i in 1:ncol(temp.tp)) {
+    temp.tp[,i] <- temp.tp[,i] / sum(temp.tp[,i]) * 100
+  }
+  
+  return(temp.tp)
+}
+```
+
+Look at the different wu clusters
+```{r}
+wu.proc = readRDS('wu_cd4_seuratprocessed.rds')
+
+DimPlot(wu.proc, reduction='WU_UMAP', group.by='tcell.type')
+DimPlot(wu.proc, reduction='umap', group.by='tcell.type')
+
+wu_labels = read.delim('wu_cd4_with_oliveira_labels_2.txt', sep='\t')
+wu.proc <- AddMetaData(wu.proc, metadata=wu_labels)
+
+DimPlot(wu.proc, reduction='umap', group.by='oliveira.pruned.labels')
+DimPlot(wu.proc, reduction='umap', label=T)
+DimPlot(wu.proc, reduction='umap', group.by='patient')
+
+## apoptotic markers
+apoptotic = c('BIK', 'RIPK2', 'CARD11', 'BNIPL') ## not helpful
+FeaturePlot(wu.proc, reduction='umap', features=apoptotic, order=T)
+
+memory = c('SELL', 'IL7R', 'PTPRC') ## bottom right? whole bottom?
+nk_like = c('KLRC1', 'TRDV2') ## bottom left
+prog_tfh = c('TCF7', 'CCR7', 'IL7R') ## bottom right, or small portion between top l-r, cluster 5
+prolif = c('MKI67') ## very small strip on top, cluster 5
+term_ex = c('PDCD1', 'ENTPD1', 'PRF1') ## top left, also rop right, cluster 5
+treg = c('IL2RA' ,'FOXP3', 'NR4A1') ## top right, cluster 2
+
+wu_genes = c('RPL32', 'TCF7', 'FOS', 'IL6ST', 'ITGAE', 'ZNF683')
+
+FeaturePlot(wu.proc, reduction = 'umap', features=memory, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=nk_like, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=prog_tfh, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=prolif, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=term_ex, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=treg, order=T)
+FeaturePlot(wu.proc, reduction = 'umap', features=wu_genes, order=T)
+
+Idents(wu.proc) <- wu.proc$seurat_clusters
+wu.markers <- FindAllMarkers(wu.proc, min.pct=0.25, logfc.threshold = log(2))
+wu.markers.poslfc <- wu.markers %>% subset(avg_logFC>0); dim(wu.markers.poslfc)
+
+top10_markers <- wu.markers.poslfc %>% group_by(cluster) %>% top_n(n=10, wt=avg_logFC)
+
+```
+
+
+
